@@ -1,18 +1,17 @@
 import { NextResponse } from "next/server";
 
+const TEXT_MODEL = "arcee-ai/trinity-large-preview:free";
+const VISION_MODEL = "nvidia/nemotron-nano-12b-v2-vl:free";
+
 type IncomingMessage = {
   role: "user" | "assistant";
   content: string;
   image?: { dataUrl: string; mime: string };
 };
 
-
-//
-// IMPORTANT: availability/pricing depends on OpenRouter.
-const DEFAULT_MODEL = "nvidia/nemotron-nano-12b-v2-vl:free";
 const SWE_SYSTEM_PROMPT = `
-You are jhattPT — a domain-specific assistant for software engineers. You are not Assistant by name you call yourself JhattPT
-
+You are jhattPT — a domain-specific assistant for software engineers.
+You must refer to yourself as "JhattPT" (not "Assistant").
 
 Output rules:
 - Use Markdown.
@@ -27,53 +26,68 @@ Engineering preferences:
 - Prefer modern best practices (typing, linting, tests, error handling).
 - Provide minimal but complete code (runnable, not pseudocode) unless asked otherwise.
 - Avoid fluff, marketing language, or motivational text.
+
+If the user provides an image:
+- Briefly describe what you see first.
+- Then answer the question.
 `;
 
 export async function POST(req: Request) {
   try {
     const { messages } = (await req.json()) as { messages: IncomingMessage[] };
 
-    const openAiStyleMessages = [
-  { role: "system", content: SWE_SYSTEM_PROMPT },
-  ...messages.map((m) => {
-    if (m.role === "user" && m.image?.dataUrl) {
-      return {
-        role: m.role,
-        content: [
-          ...(m.content?.trim() ? [{ type: "text", text: m.content }] : []),
-          {
-            type: "image_url",
-            image_url: { url: m.image.dataUrl },
-          },
-        ],
-      };
-    }
-    return { role: m.role, content: m.content ?? "" };
-  }),
-];
+    // Decide which model to use based on whether any user message includes an image
+    const hasImage = messages.some(
+      (m) => m.role === "user" && !!m.image?.dataUrl
+    );
+    const model = hasImage ? VISION_MODEL : TEXT_MODEL;
 
-    const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": process.env.OPENROUTER_SITE_URL || "http://localhost:3000",
-        "X-Title": process.env.OPENROUTER_SITE_NAME || "MyChatApp",
-      },
-      body: JSON.stringify({
-        model: DEFAULT_MODEL,
-        messages: openAiStyleMessages,
-        stream: true,
-        temperature: 0.7,
+    // Build OpenAI-style messages (multimodal when image exists)
+    const openAiStyleMessages = [
+      { role: "system", content: SWE_SYSTEM_PROMPT },
+      ...messages.map((m) => {
+        if (m.role === "user" && m.image?.dataUrl) {
+          return {
+            role: m.role,
+            content: [
+              ...(m.content?.trim() ? [{ type: "text", text: m.content }] : []),
+              {
+                type: "image_url",
+                image_url: { url: m.image.dataUrl },
+              },
+            ],
+          };
+        }
+        return { role: m.role, content: m.content ?? "" };
       }),
-    });
+    ];
+
+    const upstream = await fetch(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer":
+            process.env.OPENROUTER_SITE_URL || "http://localhost:3000",
+          "X-Title": process.env.OPENROUTER_SITE_NAME || "MyChatApp",
+        },
+        body: JSON.stringify({
+          model, // <-- uses Trinity for text, NVIDIA for images
+          messages: openAiStyleMessages,
+          stream: true,
+          temperature: 0.7,
+        }),
+      }
+    );
 
     if (!upstream.ok || !upstream.body) {
       const errText = await upstream.text().catch(() => "");
       return new NextResponse(errText || "Upstream error", { status: 500 });
     }
 
-    // OpenRouter streams SSE. We’ll parse SSE and emit just the token text.
+    // OpenRouter streams SSE. Parse SSE and emit only token text.
     const reader = upstream.body.getReader();
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
@@ -88,7 +102,7 @@ export async function POST(req: Request) {
 
           buffer += decoder.decode(value, { stream: true });
 
-          // SSE messages are separated by "\n\n"
+          // SSE messages separated by "\n\n"
           const parts = buffer.split("\n\n");
           buffer = parts.pop() || "";
 
@@ -99,11 +113,14 @@ export async function POST(req: Request) {
               if (!trimmed.startsWith("data:")) continue;
 
               const data = trimmed.slice(5).trim();
-              if (data === "[DONE]") continue;
+              if (!data || data === "[DONE]") continue;
 
               try {
                 const json = JSON.parse(data);
+
+                // Most OpenAI-style streaming uses delta.content
                 const token = json?.choices?.[0]?.delta?.content;
+
                 if (token) controller.enqueue(encoder.encode(token));
               } catch {
                 // ignore malformed lines
