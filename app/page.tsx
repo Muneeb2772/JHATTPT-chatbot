@@ -1,5 +1,7 @@
 "use client";
 
+
+import rehypeHighlight from "rehype-highlight";
 import { useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -38,33 +40,31 @@ function MessageRow({ m }: { m: ChatMessage }) {
 
           <ReactMarkdown
   remarkPlugins={[remarkGfm]}
+  rehypePlugins={[rehypeHighlight]}
   components={{
-    p: ({ children }) => (
-      <p className="text-[#EDEDED] leading-relaxed my-2">{children}</p>
-    ),
+pre: ({ children }) => (
+  <div className="my-4 overflow-hidden rounded-xl border border-[#3A3A3A] bg-[#1B1B1B]">
+    <div className="px-4 py-2 text-xs text-[#B5B5B5] border-b border-[#3A3A3A] bg-[#202020]">
+      terminal
+    </div>
+    <pre className="overflow-x-auto">
+      {children}
+    </pre>
+  </div>
+),
 
-    // Block code container (console look)
-    pre: ({ children }) => (
-      <pre className="my-4 overflow-x-auto rounded-xl border border-[#3A3A3A] bg-[#1B1B1B]">
-        {children}
-      </pre>
-    ),
-
-    // Inline vs block code: if it's inside <pre>, ReactMarkdown will render <pre><code>...</code></pre>.
-    // We style <code> differently depending on whether it has a parent <pre>.
     code: ({ className, children, ...props }) => {
-      const isBlock = typeof className === "string" && className.includes("language-");
+      const isBlock =
+        typeof className === "string" && className.includes("language-");
 
-      // If it's a fenced code block, it usually has language-xxx in className (when using remark-gfm).
-      // Regardless, when it's inside <pre>, our <pre> wrapper already provides the console background,
-      // so here we just apply padding/typography for code blocks.
       if (isBlock) {
         return (
           <code
-            className={`block p-4 text-sm leading-relaxed text-[#EDEDED] ${className}`}
+            // IMPORTANT: don't set text color here; highlight.js theme will do it
+            className={`hljs block p-4 text-sm leading-relaxed ${className}`}
             {...props}
           >
-            {String(children).replace(/\n$/, "")}
+            {children}
           </code>
         );
       }
@@ -79,16 +79,11 @@ function MessageRow({ m }: { m: ChatMessage }) {
         </code>
       );
     },
-
-    blockquote: ({ children }) => (
-      <blockquote className="border-l-4 border-[#3A3A3A] pl-4 my-3 text-[#D6D6D6]">
-        {children}
-      </blockquote>
-    ),
   }}
 >
   {m.content || ""}
 </ReactMarkdown>
+
 
         </div>
       </div>
